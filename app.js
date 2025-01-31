@@ -315,7 +315,9 @@ const app = createApp({
                 this.timerInterval = null;
             }
 
+            const now = Date.now();
             if (!task.isRunning) {
+                // Démarrage du timer
                 if (!task.startHour) {
                     task.startHour = new Date().toISOString();
                 }
@@ -324,19 +326,34 @@ const app = createApp({
                     if (t.isRunning && t.id !== task.id) {
                         t.isRunning = false;
                         t.startTime = null;
+                        // Sauvegarder l'état final de la tâche arrêtée
+                        this.saveTasks();
                     }
                 });
                 
                 task.isRunning = true;
-                task.startTime = Date.now();
+                task.startTime = now;
+                task.lastSavedTime = now;
+                task.lastSavedElapsedTime = task.elapsedTime;
+                
+                // Sauvegarder immédiatement l'état initial
+                this.saveTasks();
                 this.startTimer(task);
             } else {
+                // Arrêt du timer
                 task.isRunning = false;
+                const elapsed = Math.floor((now - task.startTime) / 1000);
+                if (elapsed > 0) {
+                    task.elapsedTime += elapsed;
+                }
                 task.startTime = null;
+                task.lastSavedTime = null;
+                task.lastSavedElapsedTime = task.elapsedTime;
+                
+                // Sauvegarder l'état final
+                this.saveTasks();
+                localStorage.removeItem('currentRunningTask');
             }
-            
-            this.saveTasks();
-            localStorage.removeItem('lastCloseTime');
         },
         startTimer(task) {
             if (!task || !task.isRunning) return;
@@ -346,12 +363,14 @@ const app = createApp({
                 clearInterval(this.timerInterval);
             }
             
-            // S'assurer que le startTime est défini
+            const now = Date.now();
             if (!task.startTime) {
-                task.startTime = Date.now();
+                task.startTime = now;
+                task.lastSavedTime = now;
+                task.lastSavedElapsedTime = task.elapsedTime;
             }
             
-            this.lastUpdateTime = Date.now();
+            this.lastUpdateTime = now;
             
             // Créer un nouveau timer qui s'exécute chaque seconde
             this.timerInterval = setInterval(() => {
@@ -360,22 +379,27 @@ const app = createApp({
                     return;
                 }
                 
-                const now = Date.now();
-                const elapsed = Math.floor((now - this.lastUpdateTime) / 1000);
+                const currentTime = Date.now();
+                const elapsed = Math.floor((currentTime - this.lastUpdateTime) / 1000);
                 
                 if (elapsed > 0) {
                     task.elapsedTime += elapsed;
-                    this.lastUpdateTime = now;
+                    this.lastUpdateTime = currentTime;
+                    task.lastSavedTime = currentTime;
+                    task.lastSavedElapsedTime = task.elapsedTime;
                     
-                    // Sauvegarder immédiatement l'état
+                    // Sauvegarder l'état
                     this.saveTasks();
                     
-                    // Sauvegarder l'état actuel dans le localStorage
+                    // Mettre à jour currentRunningTask
                     localStorage.setItem('currentRunningTask', JSON.stringify({
                         taskId: task.id,
                         startTime: task.startTime,
-                        lastUpdateTime: this.lastUpdateTime,
-                        elapsedTime: task.elapsedTime
+                        lastUpdateTime: currentTime,
+                        elapsedTime: task.elapsedTime,
+                        isRunning: true,
+                        lastSavedTime: currentTime,
+                        lastSavedElapsedTime: task.elapsedTime
                     }));
                 }
             }, 1000);
@@ -433,31 +457,46 @@ const app = createApp({
                 if (savedData) {
                     const data = JSON.parse(savedData);
                     if (data.version && data.tasks && data.settings) {
+                        const now = Date.now();
+                        
                         // Restaurer les tâches avec leur état
                         this.tasks = data.tasks.map(task => {
                             if (task.isRunning && task.lastSavedTime) {
-                                const now = Date.now();
                                 const elapsed = Math.floor((now - task.lastSavedTime) / 1000);
                                 return {
                                     ...task,
                                     elapsedTime: task.lastSavedElapsedTime + (elapsed > 0 ? elapsed : 0),
-                                    startTime: now
+                                    startTime: now,
+                                    lastSavedTime: now,
+                                    lastSavedElapsedTime: task.lastSavedElapsedTime + (elapsed > 0 ? elapsed : 0)
                                 };
                             }
-                            return task;
+                            return {
+                                ...task,
+                                isRunning: false, // Forcer l'état à false pour les tâches non en cours
+                                startTime: null,
+                                lastSavedTime: null
+                            };
                         });
 
                         this.settings = data.settings;
                         this.dasList = this.settings.dasInput.split('\n').filter(das => das.trim());
 
                         // Restaurer les tâches en cours
-                        this.tasks.forEach(task => {
-                            if (task.isRunning) {
+                        const currentRunningTask = localStorage.getItem('currentRunningTask');
+                        if (currentRunningTask) {
+                            const runningTaskData = JSON.parse(currentRunningTask);
+                            const task = this.tasks.find(t => t.id === runningTaskData.taskId);
+                            if (task) {
+                                task.isRunning = true;
+                                task.startTime = now;
+                                task.lastSavedTime = now;
+                                task.lastSavedElapsedTime = runningTaskData.elapsedTime;
                                 this.$nextTick(() => {
                                     this.startTimer(task);
                                 });
                             }
-                        });
+                        }
                     }
                 }
             } catch (error) {
