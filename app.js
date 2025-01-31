@@ -37,7 +37,17 @@ const app = createApp({
             lastCloseTime: null,
             instanceId: Date.now().toString(),
             isActiveInstance: false,
-            autoSaveTimer: null
+            autoSaveTimer: null,
+            pieChart: null,
+            chartColors: [
+                '#1976D2', '#E53935', '#43A047', '#FB8C00',
+                '#8E24AA', '#00ACC1', '#3949AB', '#C0CA33',
+                '#7B1FA2', '#00897B'
+            ],
+            statsPeriod: 'today',
+            statsStartDate: new Date().toISOString().split('T')[0],
+            statsEndDate: new Date().toISOString().split('T')[0],
+            timerInterval: null,
         };
     },
     computed: {
@@ -82,6 +92,106 @@ const app = createApp({
         maxDate() {
             return new Date().toISOString().split('T')[0];
         },
+        dasStats() {
+            const stats = {};
+            this.tasks.forEach(task => {
+                if (!stats[task.das]) {
+                    stats[task.das] = 0;
+                }
+                stats[task.das] += task.elapsedTime;
+            });
+            return stats;
+        },
+        totalStatsTime() {
+            return Object.values(this.dasStats).reduce((a, b) => a + b, 0);
+        },
+        filteredTasks() {
+            const today = new Date();
+            const startOfWeek = new Date(today);
+            startOfWeek.setDate(today.getDate() - today.getDay());
+            const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+            const startOfSixMonths = new Date(today);
+            startOfSixMonths.setMonth(today.getMonth() - 6);
+
+            return this.tasks.filter(task => {
+                const taskDate = new Date(task.date);
+                switch (this.statsPeriod) {
+                    case 'today':
+                        return task.date === today.toISOString().split('T')[0];
+                    case 'week':
+                        return taskDate >= startOfWeek && taskDate <= today;
+                    case 'month':
+                        return taskDate >= startOfMonth && taskDate <= today;
+                    case 'sixMonths':
+                        return taskDate >= startOfSixMonths && taskDate <= today;
+                    case 'custom':
+                        return task.date >= this.statsStartDate && task.date <= this.statsEndDate;
+                    case 'all':
+                    default:
+                        return true;
+                }
+            });
+        },
+        filteredDasStats() {
+            const stats = {};
+            this.filteredTasks.forEach(task => {
+                if (!stats[task.das]) {
+                    stats[task.das] = 0;
+                }
+                stats[task.das] += task.elapsedTime;
+            });
+            return stats;
+        },
+        filteredTotalTime() {
+            return Object.values(this.filteredDasStats).reduce((a, b) => a + b, 0);
+        },
+        filteredWorkDays() {
+            const uniqueDays = new Set(this.filteredTasks.map(task => task.date));
+            return uniqueDays.size;
+        },
+        filteredOvertimeHours() {
+            const expectedWorkTime = this.filteredWorkDays * this.settings.dailyWorkHours * 3600;
+            return this.filteredTotalTime - expectedWorkTime;
+        },
+        topTasks() {
+            return [...this.filteredTasks]
+                .sort((a, b) => b.elapsedTime - a.elapsedTime)
+                .slice(0, 3);
+        },
+        formatPeriodRange() {
+            const today = new Date();
+            let start, end;
+
+            switch (this.statsPeriod) {
+                case 'today':
+                    return this.formatDate(today.toISOString().split('T')[0]);
+                case 'week':
+                    start = new Date(today);
+                    start.setDate(today.getDate() - today.getDay());
+                    return `Du ${this.formatDate(start.toISOString().split('T')[0])} au ${this.formatDate(today.toISOString().split('T')[0])}`;
+                case 'month':
+                    start = new Date(today.getFullYear(), today.getMonth(), 1);
+                    end = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+                    return `Du ${this.formatDate(start.toISOString().split('T')[0])} au ${this.formatDate(end.toISOString().split('T')[0])}`;
+                case 'sixMonths':
+                    start = new Date(today);
+                    start.setMonth(today.getMonth() - 6);
+                    return `Du ${this.formatDate(start.toISOString().split('T')[0])} au ${this.formatDate(today.toISOString().split('T')[0])}`;
+                case 'custom':
+                    if (this.statsStartDate && this.statsEndDate) {
+                        return `Du ${this.formatDate(this.statsStartDate)} au ${this.formatDate(this.statsEndDate)}`;
+                    }
+                    return '';
+                case 'all':
+                    if (this.tasks.length > 0) {
+                        const dates = this.tasks.map(t => t.date);
+                        start = new Date(Math.min(...dates.map(d => new Date(d))));
+                        end = new Date(Math.max(...dates.map(d => new Date(d))));
+                        return `Du ${this.formatDate(start.toISOString().split('T')[0])} au ${this.formatDate(end.toISOString().split('T')[0])}`;
+                    }
+                    return 'Toute la période';
+            }
+        }
     },
     methods: {
         formatTime(seconds) {
@@ -156,6 +266,7 @@ const app = createApp({
                     name: this.currentTask.name,
                     das: this.currentTask.das,
                     elapsedTime: totalSeconds,
+                    initialElapsedTime: totalSeconds,
                     date: this.currentTask.date,
                     startHour: startHour
                 });
@@ -166,6 +277,7 @@ const app = createApp({
                     name: this.currentTask.name,
                     das: this.currentTask.das,
                     elapsedTime: 0,
+                    initialElapsedTime: 0,
                     isRunning: false,
                     startTime: null,
                     startHour: null
@@ -176,7 +288,7 @@ const app = createApp({
             this.editingTask = null;
             this.currentTask = { name: '', das: '', date: new Date().toISOString().split('T')[0], startTime: '' };
             this.timeEdit = { hours: '0', minutes: '0', seconds: '0' };
-            this.saveTasks();
+            this.autoSaveData();
         },
         toggleTimer(task) {
             if (!task) return;
@@ -229,39 +341,44 @@ const app = createApp({
             }
             this.dasList = this.settings.dasInput.split('\n').filter(das => das.trim());
         },
-        saveTasks() {
+        async saveTasks() {
             localStorage.setItem('timeTrackerTasks', JSON.stringify(this.tasks));
         },
         loadTasks() {
-            const savedTasks = localStorage.getItem('timeTrackerTasks');
-            if (savedTasks) {
-                this.tasks = JSON.parse(savedTasks);
-                
-                const lastCloseTime = localStorage.getItem('lastCloseTime');
-                if (lastCloseTime) {
-                    const closeTime = new Date(lastCloseTime);
-                    const now = new Date();
-                    
-                    this.tasks.forEach(task => {
-                        if (task.isRunning) {
-                            const elapsedSeconds = Math.floor((now - closeTime) / 1000);
-                            task.elapsedTime += elapsedSeconds;
-                            task.startTime = Date.now();
-                            
-                            this.startTimer(task);
-                            
-                            const minutes = Math.floor((now - closeTime) / 60000);
-                            if (minutes > 0) {
-                                const notification = new Notification('Temps ajouté', {
-                                    body: `${minutes} minute(s) ajoutée(s) à la tâche "${task.name}"`,
-                                    icon: '/favicon.ico'
-                                });
+            try {
+                const savedData = localStorage.getItem('timeTrackerData');
+                if (savedData) {
+                    const data = JSON.parse(savedData);
+                    if (data.version && data.tasks && data.settings) {
+                        this.tasks = data.tasks;
+                        this.settings = data.settings;
+                        this.dasList = this.settings.dasInput.split('\n').filter(das => das.trim());
+
+                        // Vérifier les tâches en cours au chargement initial
+                        const runningTasks = this.tasks.filter(t => t.isRunning);
+                        if (runningTasks.length > 0) {
+                            const lastCloseTime = localStorage.getItem('lastCloseTime');
+                            if (lastCloseTime) {
+                                const closeTime = new Date(lastCloseTime);
+                                const now = new Date();
+                                const minutes = Math.floor((now - closeTime) / 60000);
+                                
+                                if (minutes > 0) {
+                                    runningTasks.forEach(task => {
+                                        if (Notification.permission === 'granted') {
+                                            const notification = new Notification('Temps ajouté', {
+                                                body: `${minutes} minute(s) ajoutée(s) à la tâche "${task.name}"`,
+                                                icon: '/favicon.ico'
+                                            });
+                                        }
+                                    });
+                                }
                             }
                         }
-                    });
-                    
-                    localStorage.removeItem('lastCloseTime');
+                    }
                 }
+            } catch (error) {
+                console.error('Erreur lors du chargement des données:', error);
             }
         },
         deleteTask() {
@@ -732,13 +849,6 @@ const app = createApp({
                 localStorage.setItem('lastCloseTime', new Date().toISOString());
             }
         },
-        handleVisibilityChange() {
-            if (document.hidden) {
-                this.beforeUnload();
-            } else {
-                this.handleReopen();
-            }
-        },
         handleReopen() {
             const lastCloseTime = localStorage.getItem('lastCloseTime');
             if (lastCloseTime) {
@@ -755,16 +865,25 @@ const app = createApp({
                 if (runningTasks.length > 0) {
                     this.saveTasks();
                     const minutes = Math.floor((now - closeTime) / 60000);
-                    runningTasks.forEach(task => {
-                        const notification = new Notification('Temps ajouté', {
-                            body: `${minutes} minute(s) ajoutée(s) à la tâche "${task.name}"`,
-                            icon: '/favicon.ico'
+                    if (minutes > 0 && Notification.permission === 'granted') {
+                        runningTasks.forEach(task => {
+                            const notification = new Notification('Temps ajouté', {
+                                body: `${minutes} minute(s) ajoutée(s) à la tâche "${task.name}"`,
+                                icon: '/favicon.ico'
+                            });
                         });
-                    });
+                    }
                 }
 
                 localStorage.removeItem('lastCloseTime');
             }
+
+            // Redémarrer les timers pour les tâches en cours
+            this.tasks.forEach(task => {
+                if (task.isRunning) {
+                    this.startTimer(task);
+                }
+            });
         },
         checkActiveInstance() {
             const activeInstance = localStorage.getItem('activeInstance');
@@ -806,70 +925,34 @@ const app = createApp({
                 }
             });
         },
-        exportData() {
+        async autoSaveData() {
             try {
-                // Récupérer toutes les données du localStorage
                 const data = {
                     tasks: this.tasks,
                     settings: this.settings,
                     version: '1.0'
                 };
 
-                // Créer et télécharger le fichier JSON
-                const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-                const url = window.URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = `compteur_temps_backup_${new Date().toISOString().split('T')[0]}.json`;
-                document.body.appendChild(a);
-                a.click();
-                window.URL.revokeObjectURL(url);
-                document.body.removeChild(a);
+                // Sauvegarde dans localStorage
+                localStorage.setItem('timeTrackerData', JSON.stringify(data));
+                console.log('✅ Données sauvegardées:', new Date().toLocaleString());
             } catch (error) {
-                console.error('Erreur lors de l\'export des données:', error);
-                alert('Erreur lors de l\'export des données');
+                console.error('❌ Erreur lors de la sauvegarde:', error);
             }
         },
-        async importData(event) {
+        loadData() {
             try {
-                const file = event.target.files[0];
-                if (!file) return;
-
-                const reader = new FileReader();
-                reader.onload = (e) => {
-                    try {
-                        const data = JSON.parse(e.target.result);
-                        
-                        // Vérifier la version et la structure des données
-                        if (!data.version || !data.tasks || !data.settings) {
-                            throw new Error('Format de fichier invalide');
-                        }
-
-                        // Importer les données
+                const savedData = localStorage.getItem('timeTrackerData');
+                if (savedData) {
+                    const data = JSON.parse(savedData);
+                    if (data.version && data.tasks && data.settings) {
                         this.tasks = data.tasks;
                         this.settings = data.settings;
-                        
-                        // Sauvegarder dans le localStorage
-                        this.saveTasks();
-                        this.saveSettings();
-                        
-                        // Réinitialiser l'input file
-                        event.target.value = '';
-                        
-                        // Fermer le dialogue des paramètres
-                        this.showSettings = false;
-                        
-                        // Notifier l'utilisateur
-                        alert('Import des données réussi !');
-                    } catch (error) {
-                        console.error('Erreur lors du parsing des données:', error);
-                        alert('Le fichier sélectionné n\'est pas valide');
+                        this.dasList = this.settings.dasInput.split('\n').filter(das => das.trim());
                     }
-                };
-                reader.readAsText(file);
+                }
             } catch (error) {
-                console.error('Erreur lors de l\'import des données:', error);
-                alert('Erreur lors de l\'import des données');
+                console.error('Erreur lors du chargement des données:', error);
             }
         },
         startAutoSave() {
@@ -882,11 +965,10 @@ const app = createApp({
                     if (this.isActiveInstance) {
                         this.autoSaveData();
                     }
-                }, this.settings.autoSaveInterval * 60 * 1000); // Convertir les minutes en millisecondes
+                }, this.settings.autoSaveInterval * 60 * 1000);
             }
         },
-        
-        autoSaveData() {
+        exportToJson() {
             try {
                 const data = {
                     tasks: this.tasks,
@@ -898,18 +980,140 @@ const app = createApp({
                 const url = window.URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
-                a.download = 'compteur_temps_autosave.json';
-                a.style.display = 'none';
+                a.download = `compteur_temps_backup_${new Date().toISOString().split('T')[0]}.json`;
                 document.body.appendChild(a);
                 a.click();
                 window.URL.revokeObjectURL(url);
-                document.body.removeChild(a);
-                
-                console.log('Auto-sauvegarde effectuée:', new Date().toLocaleString());
+                console.log('✅ Fichier JSON exporté');
             } catch (error) {
-                console.error('Erreur lors de l\'auto-sauvegarde:', error);
+                console.error('❌ Erreur lors de l\'export:', error);
+                alert('Erreur lors de l\'export des données');
             }
         },
+        importFromJson(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                try {
+                    const data = JSON.parse(e.target.result);
+                    
+                    // Vérifier la structure des données
+                    if (!data.version || !data.tasks || !data.settings) {
+                        throw new Error('Format de fichier invalide');
+                    }
+
+                    // Importer les données
+                    this.tasks = data.tasks;
+                    this.settings = data.settings;
+                    this.dasList = this.settings.dasInput.split('\n').filter(das => das.trim());
+                    
+                    // Sauvegarder dans le localStorage
+                    this.autoSaveData();
+                    
+                    console.log('✅ Données importées avec succès');
+                    alert('Import réussi !');
+                } catch (error) {
+                    console.error('❌ Erreur lors de l\'import:', error);
+                    alert('Erreur : le fichier sélectionné n\'est pas valide');
+                }
+            };
+            reader.readAsText(file);
+            
+            // Réinitialiser l'input file
+            event.target.value = '';
+        },
+        getChartColor(das) {
+            const index = this.dasList.indexOf(das) % this.chartColors.length;
+            return this.chartColors[index];
+        },
+        updatePieChart() {
+            if (this.pieChart) {
+                this.pieChart.destroy();
+            }
+
+            const ctx = this.$refs.pieChart?.getContext('2d');
+            if (!ctx) return;
+
+            const data = {
+                labels: Object.keys(this.filteredDasStats),
+                datasets: [{
+                    data: Object.values(this.filteredDasStats),
+                    backgroundColor: Object.keys(this.filteredDasStats).map(das => this.getChartColor(das))
+                }]
+            };
+
+            this.pieChart = new Chart(ctx, {
+                type: 'pie',
+                data: data,
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    plugins: {
+                        legend: {
+                            position: 'bottom',
+                            display: true,
+                            labels: {
+                                font: {
+                                    size: 12
+                                },
+                                padding: 10,
+                                usePointStyle: true,
+                                pointStyle: 'circle'
+                            }
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: (context) => {
+                                    const value = context.raw;
+                                    const total = context.dataset.data.reduce((a, b) => a + b, 0);
+                                    const percentage = Math.round((value / total) * 100);
+                                    return `${context.label}: ${this.formatTime(value)} (${percentage}%)`;
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    },
+    watch: {
+        activeTab(newVal) {
+            if (newVal === 'stats') {
+                this.$nextTick(() => {
+                    this.updatePieChart();
+                });
+            }
+        },
+        tasks: {
+            deep: true,
+            handler() {
+                if (this.activeTab === 'stats') {
+                    this.updatePieChart();
+                }
+            }
+        },
+        statsPeriod: {
+            immediate: true,
+            handler() {
+                if (this.activeTab === 'stats') {
+                    this.$nextTick(() => {
+                        this.updatePieChart();
+                    });
+                }
+            }
+        },
+        filteredDasStats: {
+            deep: true,
+            handler() {
+                if (this.activeTab === 'stats') {
+                    this.$nextTick(() => {
+                        this.updatePieChart();
+                    });
+                }
+            }
+        }
     },
     mounted() {
         if (Notification.permission === 'default') {
@@ -921,6 +1125,13 @@ const app = createApp({
 
         this.loadSettings();
         this.loadTasks();
+        
+        // Gérer la réouverture au chargement initial
+        if (this.isActiveInstance) {
+            this.$nextTick(() => {
+                this.handleReopen();
+            });
+        }
 
         window.addEventListener('beforeunload', () => {
             if (this.isActiveInstance) {
@@ -948,6 +1159,9 @@ const app = createApp({
                 }
             }
         });
+
+        // Démarrer la sauvegarde automatique
+        this.startAutoSave();
     },
 });
 

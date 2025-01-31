@@ -14,6 +14,8 @@
     <!-- SheetJS -->
     <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         [v-cloak] {
             display: none;
@@ -116,6 +118,33 @@
 <body>
     <div id="app">
         <v-app>
+            <!-- Overlay pour instance inactive -->
+            <v-overlay
+                :model-value="!isActiveInstance"
+                class="align-center justify-center"
+                persistent
+                :scrim="false"
+                :opacity="0.9"
+            >
+                <v-alert
+                    color="warning"
+                    icon="mdi-alert-circle"
+                    :title="'Session déjà active'"
+                    :text="'Une autre fenêtre du compteur de temps est déjà ouverte dans ce navigateur.'"
+                    class="ma-4"
+                >
+                    <template v-slot:append>
+                        <v-btn
+                            color="warning"
+                            variant="text"
+                            @click="checkActiveInstance"
+                        >
+                            Réessayer
+                        </v-btn>
+                    </template>
+                </v-alert>
+            </v-overlay>
+
             <v-app-bar color="primary" density="compact">
                 <v-app-bar-title>Compteur de Temps - {{ settings.employeeName }}</v-app-bar-title>
                 <v-spacer></v-spacer>
@@ -138,6 +167,7 @@
                     <v-tabs v-model="activeTab">
                         <v-tab value="today">Aujourd'hui</v-tab>
                         <v-tab value="history">Historique</v-tab>
+                        <v-tab value="stats">Statistiques</v-tab>
                     </v-tabs>
 
                     <v-window v-model="activeTab">
@@ -233,7 +263,6 @@
                                             <div v-else class="text-center pa-4">
                                                 Aucune donnée pour aujourd'hui
                                             </div>
-                                            <v-divider class="my-2"></v-divider>
                                         </v-card-text>
                                     </v-card>
                                 </v-col>
@@ -286,6 +315,131 @@
                                     </v-expansion-panels>
                                 </v-card-text>
                             </v-card>
+                        </v-window-item>
+
+                        <!-- Onglet Statistiques -->
+                        <v-window-item value="stats">
+                            <v-row>
+                                <v-col cols="12">
+                                    <v-card class="mb-4">
+                                        <v-card-text>
+                                            <v-row align="center">
+                                                <v-col cols="12" sm="4">
+                                                    <v-select
+                                                        v-model="statsPeriod"
+                                                        :items="[
+                                                            { title: 'Aujourd\'hui', value: 'today' },
+                                                            { title: 'Cette semaine', value: 'week' },
+                                                            { title: 'Ce mois', value: 'month' },
+                                                            { title: '6 derniers mois', value: 'sixMonths' },
+                                                            { title: 'Tout', value: 'all' }
+                                                        ]"
+                                                        label="Période"
+                                                        density="compact"
+                                                    ></v-select>
+                                                </v-col>
+                                                <v-col cols="12" sm="4" v-if="statsPeriod === 'custom'">
+                                                    <v-text-field
+                                                        v-model="statsStartDate"
+                                                        type="date"
+                                                        label="Date début"
+                                                        density="compact"
+                                                    ></v-text-field>
+                                                </v-col>
+                                                <v-col cols="12" sm="4" v-if="statsPeriod === 'custom'">
+                                                    <v-text-field
+                                                        v-model="statsEndDate"
+                                                        type="date"
+                                                        label="Date fin"
+                                                        density="compact"
+                                                    ></v-text-field>
+                                                </v-col>
+                                            </v-row>
+                                        </v-card-text>
+                                    </v-card>
+                                </v-col>
+                                <v-col cols="12" md="4">
+                                    <v-card>
+                                        <v-card-title class="text-subtitle-1">Répartition du temps par DAS</v-card-title>
+                                        <v-card-text class="d-flex flex-column align-center">
+                                            <div style="width: 300px; height: 300px;">
+                                                <canvas ref="pieChart"></canvas>
+                                            </div>
+                                        </v-card-text>
+                                    </v-card>
+                                </v-col>
+                                <v-col cols="12" md="8">
+                                    <v-card>
+                                        <v-card-title class="text-subtitle-1">
+                                            Détails de la période
+                                            <div class="text-caption mt-1">
+                                                {{ formatPeriodRange }}
+                                            </div>
+                                        </v-card-title>
+                                        <v-card-text>
+                                            <v-row>
+                                                <v-col cols="12" md="6">
+                                                    <v-list>
+                                                        <v-list-item>
+                                                            <template v-slot:prepend>
+                                                                <v-icon color="primary">mdi-clock-outline</v-icon>
+                                                            </template>
+                                                            <v-list-item-title>Temps total travaillé</v-list-item-title>
+                                                            <v-list-item-subtitle class="text-mono">
+                                                                {{ formatTime(filteredTotalTime) }}
+                                                            </v-list-item-subtitle>
+                                                        </v-list-item>
+                                                        <v-list-item>
+                                                            <template v-slot:prepend>
+                                                                <v-icon :color="filteredOvertimeHours > 0 ? 'error' : 'success'">
+                                                                    {{ filteredOvertimeHours > 0 ? 'mdi-clock-plus' : 'mdi-clock-minus' }}
+                                                                </v-icon>
+                                                            </template>
+                                                            <v-list-item-title>
+                                                                {{ filteredOvertimeHours > 0 ? 'Heures supplémentaires' : 'Heures restantes' }}
+                                                            </v-list-item-title>
+                                                            <v-list-item-subtitle 
+                                                                class="text-mono"
+                                                                :class="filteredOvertimeHours > 0 ? 'text-error' : 'text-success'"
+                                                            >
+                                                                {{ formatTime(Math.abs(filteredOvertimeHours)) }}
+                                                            </v-list-item-subtitle>
+                                                        </v-list-item>
+                                                        <v-list-item>
+                                                            <template v-slot:prepend>
+                                                                <v-icon color="primary">mdi-calendar-clock</v-icon>
+                                                            </template>
+                                                            <v-list-item-title>Jours travaillés</v-list-item-title>
+                                                            <v-list-item-subtitle class="text-mono">
+                                                                {{ filteredWorkDays }} jour(s)
+                                                            </v-list-item-subtitle>
+                                                        </v-list-item>
+                                                    </v-list>
+                                                </v-col>
+                                                <v-col cols="12" md="6">
+                                                    <div class="text-subtitle-2 mb-2">Top 3 des tâches</div>
+                                                    <v-list density="compact">
+                                                        <v-list-item v-for="(task, index) in topTasks" :key="index">
+                                                            <template v-slot:prepend>
+                                                                <v-icon :color="getChartColor(task.das)" size="small">
+                                                                    mdi-trophy
+                                                                </v-icon>
+                                                            </template>
+                                                            <v-list-item-title class="text-body-2">
+                                                                {{ task.name }}
+                                                            </v-list-item-title>
+                                                            <v-list-item-subtitle>
+                                                                <span class="text-mono">{{ formatTime(task.elapsedTime) }}</span>
+                                                                <v-chip size="x-small" color="info" class="ml-2">{{ task.das }}</v-chip>
+                                                            </v-list-item-subtitle>
+                                                        </v-list-item>
+                                                    </v-list>
+                                                </v-col>
+                                            </v-row>
+                                        </v-card-text>
+                                    </v-card>
+                                </v-col>
+                            </v-row>
                         </v-window-item>
                     </v-window>
                 </v-container>
@@ -382,86 +536,80 @@
                 <v-card>
                     <v-card-title class="text-subtitle-1">Paramètres</v-card-title>
                     <v-card-text class="text-body-2">
-                        <v-text-field
-                            v-model="settings.employeeName"
-                            label="Nom du salarié"
-                            density="compact"
-                            required
-                        ></v-text-field>
-                        <v-text-field
-                            v-model="settings.dailyWorkHours"
-                            label="Heures de travail journalières"
-                            density="compact"
-                            type="number"
-                        ></v-text-field>
-                        <v-textarea
-                            v-model="settings.dasInput"
-                            label="Liste des DAS (un par ligne)"
-                            density="compact"
-                            rows="4"
-                        ></v-textarea>
-
+                        <div class="text-subtitle-1 mb-2">Paramètres généraux</div>
+                        <v-row>
+                            <v-col cols="12" sm="6">
+                                <v-text-field
+                                    v-model="settings.employeeName"
+                                    label="Nom du salarié"
+                                    density="compact"
+                                    variant="outlined"
+                                ></v-text-field>
+                            </v-col>
+                            <v-col cols="12" sm="6">
+                                <v-text-field
+                                    v-model.number="settings.dailyWorkHours"
+                                    label="Heures de travail par jour"
+                                    type="number"
+                                    density="compact"
+                                    variant="outlined"
+                                ></v-text-field>
+                            </v-col>
+                            <v-col cols="12">
+                                <v-textarea
+                                    v-model="settings.dasInput"
+                                    label="Liste des DAS (un par ligne)"
+                                    density="compact"
+                                    variant="outlined"
+                                    auto-grow
+                                    rows="4"
+                                ></v-textarea>
+                            </v-col>
+                            <v-col cols="12" sm="6">
+                                <v-switch
+                                    v-model="settings.autoSaveEnabled"
+                                    label="Sauvegarde automatique"
+                                    density="compact"
+                                ></v-switch>
+                            </v-col>
+                            <v-col cols="12" sm="6">
+                                <v-text-field
+                                    v-model.number="settings.autoSaveInterval"
+                                    label="Intervalle de sauvegarde (minutes)"
+                                    type="number"
+                                    density="compact"
+                                    variant="outlined"
+                                    :disabled="!settings.autoSaveEnabled"
+                                ></v-text-field>
+                            </v-col>
+                        </v-row>
                         <v-divider class="my-4"></v-divider>
-                        
-                        <div class="d-flex justify-space-between align-center mb-4">
-                            <div class="text-subtitle-2">Sauvegarde des données</div>
-                            <div>
+                        <div class="text-subtitle-1 mb-2">Sauvegarde et restauration</div>
+                        <v-row>
+                            <v-col cols="12" class="d-flex gap-2">
                                 <v-btn
                                     color="primary"
-                                    size="small"
-                                    class="mr-2"
-                                    @click="exportData"
                                     prepend-icon="mdi-download"
+                                    @click="exportToJson"
                                 >
-                                    Exporter
+                                    Exporter en JSON
                                 </v-btn>
                                 <v-btn
                                     color="primary"
-                                    size="small"
-                                    @click="$refs.importInput.click()"
                                     prepend-icon="mdi-upload"
+                                    @click="$refs.fileInput.click()"
                                 >
-                                    Importer
+                                    Importer un JSON
                                 </v-btn>
                                 <input
                                     type="file"
-                                    ref="importInput"
-                                    style="display: none"
+                                    ref="fileInput"
                                     accept=".json"
-                                    @change="importData"
+                                    style="display: none"
+                                    @change="importFromJson"
                                 >
-                            </div>
-                        </div>
-
-                        <v-switch
-                            v-model="settings.autoSaveEnabled"
-                            label="Activer l'auto-sauvegarde"
-                            color="primary"
-                            density="compact"
-                            hide-details
-                        ></v-switch>
-
-                        <v-text-field
-                            v-if="settings.autoSaveEnabled"
-                            v-model="settings.autoSaveInterval"
-                            label="Intervalle d'auto-sauvegarde (minutes)"
-                            type="number"
-                            min="5"
-                            max="120"
-                            density="compact"
-                            class="mt-2"
-                        ></v-text-field>
-
-                        <v-alert
-                            v-if="settings.autoSaveEnabled"
-                            type="info"
-                            density="compact"
-                            variant="tonal"
-                            class="mt-2 text-body-2"
-                        >
-                            Un fichier de sauvegarde sera automatiquement téléchargé toutes les {{ settings.autoSaveInterval }} minutes.
-                            Ces sauvegardes vous protègent contre la perte de données en cas de vidage du cache.
-                        </v-alert>
+                            </v-col>
+                        </v-row>
                     </v-card-text>
                     <v-card-actions>
                         <v-spacer></v-spacer>
