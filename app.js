@@ -50,6 +50,7 @@ const app = createApp({
             statsEndDate: new Date().toISOString().split('T')[0],
             timerInterval: null,
             lastUpdateTime: null,
+            notificationPermissionGranted: false,
         };
     },
     computed: {
@@ -292,8 +293,21 @@ const app = createApp({
             this.timeEdit = { hours: '0', minutes: '0', seconds: '0' };
             this.autoSaveData();
         },
+        async requestNotificationPermission() {
+            try {
+                const permission = await Notification.requestPermission();
+                this.notificationPermissionGranted = permission === 'granted';
+            } catch (error) {
+                console.error('Erreur lors de la demande de permission pour les notifications:', error);
+            }
+        },
         toggleTimer(task) {
             if (!task) return;
+
+            // Demander la permission pour les notifications lors du premier démarrage d'une tâche
+            if (!this.notificationPermissionGranted && Notification.permission === 'default') {
+                this.requestNotificationPermission();
+            }
 
             // Arrêter le timer existant s'il y en a un
             if (this.timerInterval) {
@@ -923,13 +937,11 @@ const app = createApp({
                         
                         // Envoyer une notification si plus d'une minute s'est écoulée
                         const minutes = Math.floor(elapsedSeconds / 60);
-                        if (minutes > 0 && Notification.permission === 'granted') {
-                            new Notification('Temps ajouté', {
-                                body: `${minutes} minute(s) ajoutée(s) à la tâche "${task.name}"`,
-                                icon: '/favicon.ico',
-                                tag: 'time-added-' + task.id, // Éviter les notifications en double
-                                requireInteraction: true // La notification reste jusqu'à ce que l'utilisateur interagisse avec
-                            });
+                        if (minutes > 0) {
+                            this.showNotification('Temps ajouté', 
+                                `${minutes} minute(s) ajoutée(s) à la tâche "${task.name}"`,
+                                { tag: 'time-added-' + task.id }
+                            );
                         }
                     }
                 });
@@ -1154,7 +1166,17 @@ const app = createApp({
                     }
                 }
             });
-        }
+        },
+        showNotification(title, body, options = {}) {
+            if (this.notificationPermissionGranted) {
+                new Notification(title, {
+                    body,
+                    icon: './favicon.ico',
+                    requireInteraction: true,
+                    ...options
+                });
+            }
+        },
     },
     watch: {
         activeTab(newVal) {
@@ -1194,10 +1216,8 @@ const app = createApp({
         }
     },
     mounted() {
-        // Demander la permission pour les notifications dès le départ
-        if (Notification.permission === 'default') {
-            Notification.requestPermission();
-        }
+        // Vérifier si la permission est déjà accordée
+        this.notificationPermissionGranted = Notification.permission === 'granted';
 
         // Charger les données dans le bon ordre
         this.loadSettings();
