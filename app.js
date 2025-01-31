@@ -36,7 +36,8 @@ const app = createApp({
             },
             lastCloseTime: null,
             instanceId: Date.now().toString(),
-            isActiveInstance: false,
+            activeInstances: new Set(),
+            isFirstInstance: true,
             autoSaveTimer: null,
             pieChart: null,
             chartColors: [
@@ -48,6 +49,7 @@ const app = createApp({
             statsStartDate: new Date().toISOString().split('T')[0],
             statsEndDate: new Date().toISOString().split('T')[0],
             timerInterval: null,
+            lastUpdateTime: null,
         };
     },
     computed: {
@@ -293,40 +295,66 @@ const app = createApp({
         toggleTimer(task) {
             if (!task) return;
 
+            // Arrêter le timer existant s'il y en a un
+            if (this.timerInterval) {
+                clearInterval(this.timerInterval);
+                this.timerInterval = null;
+            }
+
             if (!task.isRunning) {
                 if (!task.startHour) {
                     task.startHour = new Date().toISOString();
                 }
+                // Arrêter les autres tâches en cours
                 this.tasks.forEach(t => {
                     if (t.isRunning && t.id !== task.id) {
                         t.isRunning = false;
                         t.startTime = null;
-                        localStorage.removeItem('lastCloseTime');
                     }
                 });
-            } else {
-                localStorage.removeItem('lastCloseTime');
-            }
-
-            task.isRunning = !task.isRunning;
-            if (task.isRunning) {
+                
+                task.isRunning = true;
                 task.startTime = Date.now();
                 this.startTimer(task);
             } else {
+                task.isRunning = false;
                 task.startTime = null;
             }
+            
             this.saveTasks();
+            localStorage.removeItem('lastCloseTime');
         },
         startTimer(task) {
-            if (!task || !task.isRunning || !this.isActiveInstance) return;
+            if (!task || !task.isRunning) return;
             
-            const now = Date.now();
-            const elapsed = Math.floor((now - task.startTime) / 1000);
-            task.elapsedTime += elapsed;
-            task.startTime = now;
+            // Arrêter le timer existant s'il y en a un
+            if (this.timerInterval) {
+                clearInterval(this.timerInterval);
+            }
             
-            this.saveTasks();
-            setTimeout(() => this.startTimer(task), 1000);
+            // Définir le temps de départ
+            if (!task.startTime) {
+                task.startTime = Date.now();
+            }
+            
+            this.lastUpdateTime = Date.now();
+            
+            // Créer un nouveau timer qui s'exécute chaque seconde
+            this.timerInterval = setInterval(() => {
+                if (!task.isRunning) {
+                    clearInterval(this.timerInterval);
+                    return;
+                }
+                
+                const now = Date.now();
+                const elapsed = Math.floor((now - this.lastUpdateTime) / 1000);
+                
+                if (elapsed > 0) {
+                    task.elapsedTime += elapsed;
+                    this.lastUpdateTime = now;
+                    this.saveTasks();
+                }
+            }, 1000);
         },
         saveSettings() {
             this.dasList = this.settings.dasInput.split('\n').filter(das => das.trim());
@@ -345,40 +373,35 @@ const app = createApp({
             localStorage.setItem('timeTrackerTasks', JSON.stringify(this.tasks));
         },
         loadTasks() {
-            try {
-                const savedData = localStorage.getItem('timeTrackerData');
-                if (savedData) {
-                    const data = JSON.parse(savedData);
-                    if (data.version && data.tasks && data.settings) {
-                        this.tasks = data.tasks;
-                        this.settings = data.settings;
-                        this.dasList = this.settings.dasInput.split('\n').filter(das => das.trim());
-
-                        // Vérifier les tâches en cours au chargement initial
-                        const runningTasks = this.tasks.filter(t => t.isRunning);
-                        if (runningTasks.length > 0) {
-                            const lastCloseTime = localStorage.getItem('lastCloseTime');
-                            if (lastCloseTime) {
-                                const closeTime = new Date(lastCloseTime);
-                                const now = new Date();
-                                const minutes = Math.floor((now - closeTime) / 60000);
-                                
-                                if (minutes > 0) {
-                                    runningTasks.forEach(task => {
-                                        if (Notification.permission === 'granted') {
-                                            const notification = new Notification('Temps ajouté', {
-                                                body: `${minutes} minute(s) ajoutée(s) à la tâche "${task.name}"`,
-                                                icon: '/favicon.ico'
-                                            });
-                                        }
-                                    });
-                                }
+            const savedTasks = localStorage.getItem('timeTrackerTasks');
+            if (savedTasks) {
+                this.tasks = JSON.parse(savedTasks);
+                
+                const lastCloseTime = localStorage.getItem('lastCloseTime');
+                if (lastCloseTime) {
+                    const closeTime = new Date(lastCloseTime);
+                    const now = new Date();
+                    
+                    this.tasks.forEach(task => {
+                        if (task.isRunning) {
+                            const elapsedSeconds = Math.floor((now - closeTime) / 1000);
+                            task.elapsedTime += elapsedSeconds;
+                            task.startTime = Date.now();
+                            
+                            this.startTimer(task);
+                            
+                            const minutes = Math.floor((now - closeTime) / 60000);
+                            if (minutes > 0) {
+                                const notification = new Notification('Temps ajouté', {
+                                    body: `${minutes} minute(s) ajoutée(s) à la tâche "${task.name}"`,
+                                    icon: '/favicon.ico'
+                                });
                             }
                         }
-                    }
+                    });
+                    
+                    localStorage.removeItem('lastCloseTime');
                 }
-            } catch (error) {
-                console.error('Erreur lors du chargement des données:', error);
             }
         },
         deleteTask() {
@@ -845,9 +868,16 @@ const app = createApp({
             // ... (le reste du code de la méthode isHoliday)
         },
         beforeUnload() {
-            if (this.tasks.some(t => t.isRunning)) {
+            const runningTasks = this.tasks.filter(t => t.isRunning);
+            if (runningTasks.length > 0) {
                 localStorage.setItem('lastCloseTime', new Date().toISOString());
+                this.saveTasks();
             }
+            
+            // Supprimer cette instance de la liste des instances actives
+            const instances = JSON.parse(localStorage.getItem('activeInstances') || '[]');
+            const updatedInstances = instances.filter(i => i.id !== this.instanceId);
+            localStorage.setItem('activeInstances', JSON.stringify(updatedInstances));
         },
         handleReopen() {
             const lastCloseTime = localStorage.getItem('lastCloseTime');
@@ -858,70 +888,92 @@ const app = createApp({
                 
                 runningTasks.forEach(task => {
                     const elapsedSeconds = Math.floor((now - closeTime) / 1000);
-                    task.elapsedTime += elapsedSeconds;
-                    task.startTime = Date.now();
+                    if (elapsedSeconds > 0) {
+                        task.elapsedTime += elapsedSeconds;
+                        task.startTime = Date.now();
+                        
+                        // Redémarrer le timer
+                        this.startTimer(task);
+                        
+                        // Envoyer une notification si plus d'une minute s'est écoulée
+                        const minutes = Math.floor(elapsedSeconds / 60);
+                        if (minutes > 0 && Notification.permission === 'granted') {
+                            new Notification('Temps ajouté', {
+                                body: `${minutes} minute(s) ajoutée(s) à la tâche "${task.name}"`,
+                                icon: '/favicon.ico',
+                                tag: 'time-added-' + task.id, // Éviter les notifications en double
+                                requireInteraction: true // La notification reste jusqu'à ce que l'utilisateur interagisse avec
+                            });
+                        }
+                    }
                 });
 
                 if (runningTasks.length > 0) {
                     this.saveTasks();
-                    const minutes = Math.floor((now - closeTime) / 60000);
-                    if (minutes > 0 && Notification.permission === 'granted') {
-                        runningTasks.forEach(task => {
-                            const notification = new Notification('Temps ajouté', {
-                                body: `${minutes} minute(s) ajoutée(s) à la tâche "${task.name}"`,
-                                icon: '/favicon.ico'
-                            });
-                        });
-                    }
                 }
 
                 localStorage.removeItem('lastCloseTime');
             }
-
-            // Redémarrer les timers pour les tâches en cours
-            this.tasks.forEach(task => {
-                if (task.isRunning) {
-                    this.startTimer(task);
-                }
-            });
         },
         checkActiveInstance() {
-            const activeInstance = localStorage.getItem('activeInstance');
-            const lastPing = localStorage.getItem('lastPing');
             const now = Date.now();
+            let instances = JSON.parse(localStorage.getItem('activeInstances') || '[]');
+            
+            // Nettoyer les instances inactives (plus de 5 secondes sans ping)
+            instances = instances.filter(instance => {
+                return (now - instance.lastPing) <= 5000;
+            });
 
-            if (!activeInstance || !lastPing || (now - parseInt(lastPing)) > 5000) {
-                this.setAsActiveInstance();
-                return true;
+            // Mettre à jour ou ajouter l'instance actuelle
+            const currentInstance = instances.find(i => i.id === this.instanceId);
+            if (!currentInstance) {
+                instances.push({
+                    id: this.instanceId,
+                    lastPing: now
+                });
+            } else {
+                currentInstance.lastPing = now;
             }
 
-            if (activeInstance === this.instanceId || document.hidden === undefined) {
-                this.setAsActiveInstance();
-                return true;
-            }
-
-            return false;
+            // Trier les instances par ID (qui est basé sur timestamp) pour identifier la plus ancienne
+            instances.sort((a, b) => parseInt(a.id) - parseInt(b.id));
+            
+            // L'instance est la première si son ID correspond à la plus ancienne instance
+            this.isFirstInstance = instances[0].id === this.instanceId;
+            
+            localStorage.setItem('activeInstances', JSON.stringify(instances));
+            this.activeInstances = new Set(instances.map(i => i.id));
+            
+            return this.isFirstInstance;
         },
         setAsActiveInstance() {
-            localStorage.setItem('activeInstance', this.instanceId);
             this.updatePing();
-            this.isActiveInstance = true;
         },
         updatePing() {
-            localStorage.setItem('lastPing', Date.now().toString());
+            this.checkActiveInstance();
         },
         startInstanceCheck() {
+            // Vérifier les instances actives toutes les 2 secondes
             setInterval(() => {
-                if (this.isActiveInstance) {
-                    this.updatePing();
-                } else {
-                    this.isActiveInstance = this.checkActiveInstance();
-                }
+                this.checkActiveInstance();
             }, 2000);
 
+            // Écouter les changements dans le localStorage
             window.addEventListener('storage', (e) => {
-                if (e.key === 'activeInstance' && e.newValue !== this.instanceId) {
-                    this.isActiveInstance = false;
+                if (e.key === 'activeInstances') {
+                    this.checkActiveInstance();
+                } else if (e.key === 'timeTrackerTasks') {
+                    // Recharger les tâches si elles ont été modifiées par une autre instance
+                    const newTasks = JSON.parse(e.newValue);
+                    if (newTasks) {
+                        this.tasks = newTasks;
+                        // Redémarrer les timers si nécessaire
+                        this.tasks.forEach(task => {
+                            if (task.isRunning) {
+                                this.startTimer(task);
+                            }
+                        });
+                    }
                 }
             });
         },
@@ -962,7 +1014,7 @@ const app = createApp({
             
             if (this.settings.autoSaveEnabled) {
                 this.autoSaveTimer = setInterval(() => {
-                    if (this.isActiveInstance) {
+                    if (this.checkActiveInstance()) {
                         this.autoSaveData();
                     }
                 }, this.settings.autoSaveInterval * 60 * 1000);
@@ -1120,48 +1172,34 @@ const app = createApp({
             Notification.requestPermission();
         }
 
-        this.isActiveInstance = this.checkActiveInstance();
         this.startInstanceCheck();
-
         this.loadSettings();
         this.loadTasks();
-        
-        // Gérer la réouverture au chargement initial
-        if (this.isActiveInstance) {
-            this.$nextTick(() => {
-                this.handleReopen();
-            });
-        }
 
         window.addEventListener('beforeunload', () => {
-            if (this.isActiveInstance) {
-                const runningTasks = this.tasks.filter(t => t.isRunning);
-                if (runningTasks.length > 0) {
-                    this.beforeUnload();
-                }
-                localStorage.removeItem('activeInstance');
-                localStorage.removeItem('lastPing');
-            }
+            this.beforeUnload();
         });
         
         document.addEventListener('visibilitychange', () => {
             if (document.hidden) {
-                if (this.isActiveInstance) {
-                    const runningTasks = this.tasks.filter(t => t.isRunning);
-                    if (runningTasks.length > 0) {
-                        this.beforeUnload();
-                    }
+                const runningTasks = this.tasks.filter(t => t.isRunning);
+                if (runningTasks.length > 0) {
+                    this.beforeUnload();
                 }
             } else {
-                this.isActiveInstance = this.checkActiveInstance();
-                if (this.isActiveInstance) {
-                    this.handleReopen();
-                }
+                this.checkActiveInstance();
+                this.handleReopen();
             }
         });
 
         // Démarrer la sauvegarde automatique
         this.startAutoSave();
+    },
+    beforeDestroy() {
+        // Nettoyer le timer lors de la destruction du composant
+        if (this.timerInterval) {
+            clearInterval(this.timerInterval);
+        }
     },
 });
 
