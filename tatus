@@ -1,0 +1,8 @@
+user.email=julienrat@riseup.net
+user.name=Julien RAT
+credential.helper=store
+init.defaultbranch=main
+core.repositoryformatversion=0
+core.filemode=true
+core.bare=false
+core.logallrefupdates=true

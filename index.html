@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Compteur de Temps de Travail</title>
+    <!-- Vue.js -->
+    <script src="https://unpkg.com/vue@3.4.15/dist/vue.global.prod.js"></script>
+    <!-- Vuetify -->
+    <link href="https://cdn.jsdelivr.net/npm/vuetify@3.5.1/dist/vuetify.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/vuetify@3.5.1/dist/vuetify.min.js"></script>
+    <!-- Material Design Icons -->
+    <link href="https://cdn.jsdelivr.net/npm/@mdi/font@latest/css/materialdesignicons.min.css" rel="stylesheet">
+    <!-- SheetJS -->
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
+    <style>
+        [v-cloak] {
+            display: none;
+        }
+        .timer-display {
+            font-size: 1.5rem;
+            font-weight: bold;
+            font-family: monospace;
+        }
+        .daily-total {
+            font-size: 2.5rem;
+            font-weight: bold;
+            text-align: center;
+            margin: 1rem 0;
+            color: #1976D2;
+            font-family: monospace;
+            text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.1);
+        }
+        .task-row {
+            cursor: pointer;
+        }
+        .task-row:hover {
+            background-color: rgba(0,0,0,0.1);
+        }
+        html {
+            overflow-y: auto !important;
+        }
+        .v-table {
+            width: 100%;
+        }
+        .recap-card {
+            border-radius: 16px !important;
+            transition: transform 0.3s, box-shadow 0.3s;
+            background: linear-gradient(135deg, rgba(236, 239, 244, 0.95), rgba(207, 216, 230, 0.95)) !important;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.7);
+        }
+        .recap-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 12px 24px rgba(25, 118, 210, 0.15) !important;
+            background: linear-gradient(135deg, rgba(236, 239, 244, 0.97), rgba(207, 216, 230, 0.97)) !important;
+        }
+        .recap-list {
+            padding: 16px !important;
+            background: transparent !important;
+        }
+        .recap-list-item {
+            border-radius: 8px;
+            margin-bottom: 8px !important;
+            background: rgba(255, 255, 255, 0.8) !important;
+            transition: all 0.2s;
+            border: 1px solid rgba(25, 118, 210, 0.1);
+        }
+        .recap-list-item:hover {
+            background: rgba(227, 242, 253, 0.95) !important;
+            border: 1px solid rgba(25, 118, 210, 0.2);
+            transform: translateX(5px);
+        }
+        .recap-time {
+            font-family: monospace;
+            font-size: 1.2rem;
+            color: #1976D2;
+        }
+        body {
+            background: linear-gradient(135deg, #f5f7fa, #e4e7eb);
+            min-height: 100vh;
+        }
+        .start-time {
+            font-family: monospace;
+            color: #666;
+        }
+        .remaining-time {
+            font-family: monospace;
+            font-size: 1rem;
+            color: #666;
+            text-align: center;
+            margin-top: 0.5rem;
+        }
+        .overtime {
+            font-family: monospace;
+            font-size: 2rem;
+            font-weight: bold;
+            text-align: center;
+            margin: 0.5rem 0;
+        }
+        .overtime.positive {
+            color: #f44336;
+            text-shadow: 1px 1px 2px rgba(244, 67, 54, 0.1);
+        }
+        .overtime.negative {
+            color: #4caf50;
+            text-shadow: 1px 1px 2px rgba(76, 175, 80, 0.1);
+        }
+        .overtime-history {
+            font-family: monospace;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <v-app>
+            <v-app-bar color="primary" density="compact">
+                <v-app-bar-title>Compteur de Temps - {{ settings.employeeName }}</v-app-bar-title>
+                <v-spacer></v-spacer>
+                <v-btn icon class="mr-2" @click="exportExcel" title="Exporter en Excel">
+                    <v-icon>mdi-microsoft-excel</v-icon>
+                </v-btn>
+                <v-btn icon class="mr-2" @click="exportCSV" title="Exporter en CSV">
+                    <v-icon>mdi-file-delimited-outline</v-icon>
+                </v-btn>
+                <v-btn icon class="mr-2" @click="exportICAL" title="Exporter en ICAL">
+                    <v-icon>mdi-calendar-export</v-icon>
+                </v-btn>
+                <v-btn icon @click="showSettings = true">
+                    <v-icon>mdi-cog</v-icon>
+                </v-btn>
+            </v-app-bar>
+
+            <v-main>
+                <v-container fluid>
+                    <v-tabs v-model="activeTab">
+                        <v-tab value="today">Aujourd'hui</v-tab>
+                        <v-tab value="history">Historique</v-tab>
+                    </v-tabs>
+
+                    <v-window v-model="activeTab">
+                        <!-- Onglet Aujourd'hui -->
+                        <v-window-item value="today">
+                            <v-row>
+                                <!-- Tableau des tâches -->
+                                <v-col cols="12" md="8">
+                                    <v-card>
+                                        <v-card-title class="d-flex align-center">
+                                            Tâches du jour
+                                            <v-spacer></v-spacer>
+                                            <v-btn color="primary" @click="showTaskDialog = true">
+                                                <v-icon>mdi-plus</v-icon> Nouvelle Tâche
+                                            </v-btn>
+                                        </v-card-title>
+                                        <v-card-text>
+                                            <div class="v-table">
+                                                <div class="v-table__wrapper">
+                                                    <table>
+                                                        <thead>
+                                                            <tr>
+                                                                <th>Tâche</th>
+                                                                <th>DAS</th>
+                                                                <th>Début</th>
+                                                                <th>Temps</th>
+                                                                <th>Actions</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody>
+                                                            <tr v-for="task in todayTasks" 
+                                                                :key="task.id" 
+                                                                class="task-row"
+                                                                @dblclick="editTask(task)">
+                                                                <td>{{ task.name }}</td>
+                                                                <td>
+                                                                    <v-chip color="info" size="small">{{ task.das }}</v-chip>
+                                                                </td>
+                                                                <td>
+                                                                    <span class="start-time">{{ task.startHour ? formatStartTime(task.startHour) : '-' }}</span>
+                                                                </td>
+                                                                <td>
+                                                                    <span class="timer-display">{{ formatTime(task.elapsedTime) }}</span>
+                                                                </td>
+                                                                <td>
+                                                                    <v-btn
+                                                                        :color="task.isRunning ? 'error' : 'success'"
+                                                                        size="small"
+                                                                        @click="toggleTimer(task)">
+                                                                        <v-icon>{{ task.isRunning ? 'mdi-stop' : 'mdi-play' }}</v-icon>
+                                                                    </v-btn>
+                                                                </td>
+                                                            </tr>
+                                                            <tr v-if="todayTasks.length === 0">
+                                                                <td colspan="4" class="text-center pa-4">
+                                                                    Aucune tâche pour aujourd'hui
+                                                                </td>
+                                                            </tr>
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                            </div>
+                                        </v-card-text>
+                                    </v-card>
+                                </v-col>
+
+                                <!-- Compteur journalier -->
+                                <v-col cols="12" md="4">
+                                    <v-card class="recap-card" elevation="3">
+                                        <v-card-title class="text-center pt-4">Récapitulatif du Jour</v-card-title>
+                                        <v-card-text>
+                                            <div class="daily-total">
+                                                {{ formatTime(todayTotalTime) }}
+                                            </div>
+                                            <div class="remaining-time">
+                                                Restant: {{ formatTime(Math.max(0, settings.dailyWorkHours * 3600 - todayTotalTime)) }}
+                                            </div>
+                                            <v-list v-if="Object.keys(todayDasSummary).length > 0" class="recap-list">
+                                                <v-list-item
+                                                    v-for="(total, das) in todayDasSummary"
+                                                    :key="das"
+                                                    class="recap-list-item"
+                                                    rounded="lg">
+                                                    <template v-slot:prepend>
+                                                        <v-icon color="primary">mdi-clock-outline</v-icon>
+                                                    </template>
+                                                    <v-list-item-title>{{ das }}</v-list-item-title>
+                                                    <v-list-item-subtitle class="recap-time">
+                                                        {{ formatTime(total) }}
+                                                    </v-list-item-subtitle>
+                                                </v-list-item>
+                                            </v-list>
+                                            <div v-else class="text-center pa-4">
+                                                Aucune donnée pour aujourd'hui
+                                            </div>
+                                            <v-divider class="my-2"></v-divider>
+                                        </v-card-text>
+                                    </v-card>
+                                </v-col>
+                            </v-row>
+                        </v-window-item>
+
+                        <!-- Onglet Historique -->
+                        <v-window-item value="history">
+                            <v-card>
+                                <v-card-title>Historique des Journées</v-card-title>
+                                <v-card-text>
+                                    <v-expansion-panels>
+                                        <v-expansion-panel
+                                            v-for="(dayData, date) in groupedHistoricalTasks"
+                                            :key="date">
+                                            <v-expansion-panel-title>
+                                                {{ formatDate(date) }} - Total: {{ formatTime(getDayTotal(dayData)) }}
+                                                <span class="overtime-history ml-2" 
+                                                      :class="getDayTotal(dayData) - settings.dailyWorkHours * 3600 > 0 ? 'positive' : 'negative'">
+                                                    ({{ formatTime(getDayTotal(dayData) - settings.dailyWorkHours * 3600) }})
+                                                </span>
+                                            </v-expansion-panel-title>
+                                            <v-expansion-panel-text>
+                                                <div class="v-table">
+                                                    <div class="v-table__wrapper">
+                                                        <table>
+                                                            <thead>
+                                                                <tr>
+                                                                    <th>Tâche</th>
+                                                                    <th>DAS</th>
+                                                                    <th>Temps</th>
+                                                                </tr>
+                                                            </thead>
+                                                            <tbody>
+                                                                <tr v-for="task in dayData" :key="task.id"
+                                                                    class="task-row"
+                                                                    @dblclick="editTask(task)">
+                                                                    <td>{{ task.name }}</td>
+                                                                    <td>
+                                                                        <v-chip color="info" size="small">{{ task.das }}</v-chip>
+                                                                    </td>
+                                                                    <td>{{ formatTime(task.elapsedTime) }}</td>
+                                                                </tr>
+                                                            </tbody>
+                                                        </table>
+                                                    </div>
+                                                </div>
+                                            </v-expansion-panel-text>
+                                        </v-expansion-panel>
+                                    </v-expansion-panels>
+                                </v-card-text>
+                            </v-card>
+                        </v-window-item>
+                    </v-window>
+                </v-container>
+            </v-main>
+
+            <!-- Dialog Nouvelle/Modification Tâche -->
+            <v-dialog v-model="showTaskDialog" max-width="500px">
+                <v-card>
+                    <v-card-title>{{ editingTask ? 'Modifier la Tâche' : 'Nouvelle Tâche' }}</v-card-title>
+                    <v-card-text>
+                        <v-text-field
+                            v-model="currentTask.name"
+                            label="Nom de la tâche"
+                            required
+                        ></v-text-field>
+                        <v-select
+                            v-model="currentTask.das"
+                            :items="dasList"
+                            label="DAS"
+                            required
+                        ></v-select>
+                        <v-row v-if="editingTask" align="center">
+                            <v-col cols="12">
+                                <v-text-field
+                                    v-model="currentTask.date"
+                                    type="date"
+                                    label="Date"
+                                    :max="maxDate"
+                                    required
+                                ></v-text-field>
+                            </v-col>
+                            <v-col cols="12">
+                                <v-text-field
+                                    v-model="currentTask.startTime"
+                                    type="time"
+                                    label="Heure de début"
+                                ></v-text-field>
+                            </v-col>
+                            <v-col cols="12">
+                                <div class="text-subtitle-1 mb-2">Temps écoulé</div>
+                                <v-row>
+                                    <v-col cols="4">
+                                        <v-text-field
+                                            v-model="timeEdit.hours"
+                                            label="Heures"
+                                            type="number"
+                                            min="0"
+                                            @input="validateTimeInput"
+                                        ></v-text-field>
+                                    </v-col>
+                                    <v-col cols="4">
+                                        <v-text-field
+                                            v-model="timeEdit.minutes"
+                                            label="Minutes"
+                                            type="number"
+                                            min="0"
+                                            max="59"
+                                            @input="validateTimeInput"
+                                        ></v-text-field>
+                                    </v-col>
+                                    <v-col cols="4">
+                                        <v-text-field
+                                            v-model="timeEdit.seconds"
+                                            label="Secondes"
+                                            type="number"
+                                            min="0"
+                                            max="59"
+                                            @input="validateTimeInput"
+                                        ></v-text-field>
+                                    </v-col>
+                                </v-row>
+                            </v-col>
+                        </v-row>
+                    </v-card-text>
+                    <v-card-actions>
+                        <v-btn 
+                            v-if="editingTask"
+                            color="error" 
+                            variant="text"
+                            @click="deleteTask"
+                            class="mr-auto">
+                            <v-icon>mdi-delete</v-icon>
+                            Supprimer
+                        </v-btn>
+                        <v-spacer v-else></v-spacer>
+                        <v-btn color="error" variant="text" @click="showTaskDialog = false">Annuler</v-btn>
+                        <v-btn color="success" @click="saveTask">{{ editingTask ? 'Modifier' : 'Créer' }}</v-btn>
+                    </v-card-actions>
+                </v-card>
+            </v-dialog>
+
+            <!-- Dialog Paramètres -->
+            <v-dialog v-model="showSettings" max-width="500px">
+                <v-card>
+                    <v-card-title class="text-subtitle-1">Paramètres</v-card-title>
+                    <v-card-text class="text-body-2">
+                        <v-text-field
+                            v-model="settings.employeeName"
+                            label="Nom du salarié"
+                            density="compact"
+                            required
+                        ></v-text-field>
+                        <v-text-field
+                            v-model="settings.dailyWorkHours"
+                            label="Heures de travail journalières"
+                            density="compact"
+                            type="number"
+                        ></v-text-field>
+                        <v-textarea
+                            v-model="settings.dasInput"
+                            label="Liste des DAS (un par ligne)"
+                            density="compact"
+                            rows="4"
+                        ></v-textarea>
+
+                        <v-divider class="my-4"></v-divider>
+                        
+                        <div class="d-flex justify-space-between align-center mb-4">
+                            <div class="text-subtitle-2">Sauvegarde des données</div>
+                            <div>
+                                <v-btn
+                                    color="primary"
+                                    size="small"
+                                    class="mr-2"
+                                    @click="exportData"
+                                    prepend-icon="mdi-download"
+                                >
+                                    Exporter
+                                </v-btn>
+                                <v-btn
+                                    color="primary"
+                                    size="small"
+                                    @click="$refs.importInput.click()"
+                                    prepend-icon="mdi-upload"
+                                >
+                                    Importer
+                                </v-btn>
+                                <input
+                                    type="file"
+                                    ref="importInput"
+                                    style="display: none"
+                                    accept=".json"
+                                    @change="importData"
+                                >
+                            </div>
+                        </div>
+
+                        <v-switch
+                            v-model="settings.autoSaveEnabled"
+                            label="Activer l'auto-sauvegarde"
+                            color="primary"
+                            density="compact"
+                            hide-details
+                        ></v-switch>
+
+                        <v-text-field
+                            v-if="settings.autoSaveEnabled"
+                            v-model="settings.autoSaveInterval"
+                            label="Intervalle d'auto-sauvegarde (minutes)"
+                            type="number"
+                            min="5"
+                            max="120"
+                            density="compact"
+                            class="mt-2"
+                        ></v-text-field>
+
+                        <v-alert
+                            v-if="settings.autoSaveEnabled"
+                            type="info"
+                            density="compact"
+                            variant="tonal"
+                            class="mt-2 text-body-2"
+                        >
+                            Un fichier de sauvegarde sera automatiquement téléchargé toutes les {{ settings.autoSaveInterval }} minutes.
+                            Ces sauvegardes vous protègent contre la perte de données en cas de vidage du cache.
+                        </v-alert>
+                    </v-card-text>
+                    <v-card-actions>
+                        <v-spacer></v-spacer>
+                        <v-btn color="error" @click="showSettings = false" size="small">Annuler</v-btn>
+                        <v-btn color="success" @click="saveSettings" size="small">Enregistrer</v-btn>
+                    </v-card-actions>
+                </v-card>
+            </v-dialog>
+        </v-app>
+    </div>
+
+    <!-- Charger le fichier JavaScript séparé -->
+    <script src="app.js"></script>
+</body>
+</html>
