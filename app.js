@@ -332,7 +332,7 @@ const app = createApp({
                 clearInterval(this.timerInterval);
             }
             
-            // Définir le temps de départ
+            // S'assurer que le startTime est défini
             if (!task.startTime) {
                 task.startTime = Date.now();
             }
@@ -353,6 +353,13 @@ const app = createApp({
                     task.elapsedTime += elapsed;
                     this.lastUpdateTime = now;
                     this.saveTasks();
+                    
+                    // Sauvegarder l'état actuel dans le localStorage
+                    localStorage.setItem('currentRunningTask', JSON.stringify({
+                        taskId: task.id,
+                        startTime: task.startTime,
+                        lastUpdateTime: this.lastUpdateTime
+                    }));
                 }
             }, 1000);
         },
@@ -375,32 +382,51 @@ const app = createApp({
         loadTasks() {
             const savedTasks = localStorage.getItem('timeTrackerTasks');
             if (savedTasks) {
-                this.tasks = JSON.parse(savedTasks);
-                
-                const lastCloseTime = localStorage.getItem('lastCloseTime');
-                if (lastCloseTime) {
-                    const closeTime = new Date(lastCloseTime);
-                    const now = new Date();
+                try {
+                    this.tasks = JSON.parse(savedTasks);
                     
+                    // Restaurer l'état des tâches en cours
                     this.tasks.forEach(task => {
                         if (task.isRunning) {
-                            const elapsedSeconds = Math.floor((now - closeTime) / 1000);
-                            task.elapsedTime += elapsedSeconds;
+                            // Réinitialiser le startTime pour les tâches en cours
                             task.startTime = Date.now();
-                            
-                            this.startTimer(task);
-                            
-                            const minutes = Math.floor((now - closeTime) / 60000);
-                            if (minutes > 0) {
-                                const notification = new Notification('Temps ajouté', {
-                                    body: `${minutes} minute(s) ajoutée(s) à la tâche "${task.name}"`,
-                                    icon: '/favicon.ico'
-                                });
-                            }
+                            // Démarrer le timer
+                            this.$nextTick(() => {
+                                this.startTimer(task);
+                            });
                         }
                     });
-                    
-                    localStorage.removeItem('lastCloseTime');
+
+                    const lastCloseTime = localStorage.getItem('lastCloseTime');
+                    if (lastCloseTime) {
+                        const closeTime = new Date(lastCloseTime);
+                        const now = new Date();
+                        
+                        this.tasks.forEach(task => {
+                            if (task.isRunning) {
+                                const elapsedSeconds = Math.floor((now - closeTime) / 1000);
+                                if (elapsedSeconds > 0) {
+                                    task.elapsedTime += elapsedSeconds;
+                                    task.startTime = Date.now();
+                                    
+                                    // Notification si plus d'une minute s'est écoulée
+                                    const minutes = Math.floor(elapsedSeconds / 60);
+                                    if (minutes > 0 && Notification.permission === 'granted') {
+                                        new Notification('Temps ajouté', {
+                                            body: `${minutes} minute(s) ajoutée(s) à la tâche "${task.name}"`,
+                                            icon: './favicon.ico',
+                                            tag: 'time-added-' + task.id,
+                                            requireInteraction: true
+                                        });
+                                    }
+                                }
+                            }
+                        });
+                        
+                        localStorage.removeItem('lastCloseTime');
+                    }
+                } catch (error) {
+                    console.error('Erreur lors du chargement des tâches:', error);
                 }
             }
         },
@@ -1168,14 +1194,35 @@ const app = createApp({
         }
     },
     mounted() {
+        // Demander la permission pour les notifications dès le départ
         if (Notification.permission === 'default') {
             Notification.requestPermission();
         }
 
-        this.startInstanceCheck();
+        // Charger les données dans le bon ordre
         this.loadSettings();
+        this.loadData();
         this.loadTasks();
 
+        // Vérifier s'il y avait une tâche en cours
+        const currentRunningTask = localStorage.getItem('currentRunningTask');
+        if (currentRunningTask) {
+            try {
+                const { taskId, startTime, lastUpdateTime } = JSON.parse(currentRunningTask);
+                const task = this.tasks.find(t => t.id === taskId);
+                if (task && task.isRunning) {
+                    task.startTime = startTime;
+                    this.lastUpdateTime = lastUpdateTime;
+                    this.$nextTick(() => {
+                        this.startTimer(task);
+                    });
+                }
+            } catch (error) {
+                console.error('Erreur lors de la restauration de la tâche en cours:', error);
+            }
+        }
+
+        // Gestionnaires d'événements
         window.addEventListener('beforeunload', () => {
             this.beforeUnload();
         });
@@ -1192,14 +1239,16 @@ const app = createApp({
             }
         });
 
-        // Démarrer la sauvegarde automatique
+        // Démarrer les vérifications d'instance et la sauvegarde automatique
+        this.startInstanceCheck();
         this.startAutoSave();
     },
     beforeDestroy() {
-        // Nettoyer le timer lors de la destruction du composant
         if (this.timerInterval) {
             clearInterval(this.timerInterval);
         }
+        // Nettoyer les données temporaires
+        localStorage.removeItem('currentRunningTask');
     },
 });
 
