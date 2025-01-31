@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Compteur de Temps de Travail</title>
+    <link rel="icon" type="image/x-icon" href="/compteur-temps/favicon.ico">
     <!-- Vue.js -->
     <script src="https://unpkg.com/vue@3.4.15/dist/vue.global.prod.js"></script>
     <!-- Vuetify -->
@@ -120,7 +121,7 @@
         <v-app>
             <!-- Overlay pour instance inactive -->
             <v-overlay
-                :model-value="!isActiveInstance"
+                :model-value="!isFirstInstance"
                 class="align-center justify-center"
                 persistent
                 :scrim="false"
