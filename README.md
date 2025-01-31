@@ -2,6 +2,11 @@
 
 Une application web élégante et intuitive pour suivre votre temps de travail quotidien.
 
+## 🌐 Accès Direct
+
+Accédez directement à l'application sans installation via GitHub Pages :
+[https://julienrat.github.io/compteur-temps](https://julienrat.github.io/compteur-temps)
+
 ## 🌟 Fonctionnalités
 
 ### Version 3.0 (Dernière version)
