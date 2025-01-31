@@ -395,69 +395,73 @@ const app = createApp({
         },
         async saveTasks() {
             try {
-                // Sauvegarder dans timeTrackerTasks
-                localStorage.setItem('timeTrackerTasks', JSON.stringify(this.tasks));
+                // Sauvegarder l'état complet des tâches
+                const tasksToSave = this.tasks.map(task => ({
+                    ...task,
+                    lastSavedTime: task.isRunning ? Date.now() : null,
+                    lastSavedElapsedTime: task.elapsedTime
+                }));
+                
+                localStorage.setItem('timeTrackerTasks', JSON.stringify(tasksToSave));
                 
                 // Sauvegarder aussi dans timeTrackerData pour assurer la cohérence
                 const data = {
-                    tasks: this.tasks,
+                    tasks: tasksToSave,
                     settings: this.settings,
                     version: '1.0'
                 };
                 localStorage.setItem('timeTrackerData', JSON.stringify(data));
+
+                // Si une tâche est en cours, sauvegarder son état actuel
+                const runningTask = this.tasks.find(t => t.isRunning);
+                if (runningTask) {
+                    localStorage.setItem('currentRunningTask', JSON.stringify({
+                        taskId: runningTask.id,
+                        startTime: runningTask.startTime,
+                        lastUpdateTime: Date.now(),
+                        elapsedTime: runningTask.elapsedTime,
+                        isRunning: true
+                    }));
+                }
             } catch (error) {
                 console.error('Erreur lors de la sauvegarde des tâches:', error);
             }
         },
-        loadTasks() {
-            const savedTasks = localStorage.getItem('timeTrackerTasks');
-            if (savedTasks) {
-                try {
-                    this.tasks = JSON.parse(savedTasks);
-                    
-                    // Restaurer l'état des tâches en cours
-                    this.tasks.forEach(task => {
-                        if (task.isRunning) {
-                            // Réinitialiser le startTime pour les tâches en cours
-                            task.startTime = Date.now();
-                            // Démarrer le timer
-                            this.$nextTick(() => {
-                                this.startTimer(task);
-                            });
-                        }
-                    });
+        loadData() {
+            try {
+                const savedData = localStorage.getItem('timeTrackerData');
+                if (savedData) {
+                    const data = JSON.parse(savedData);
+                    if (data.version && data.tasks && data.settings) {
+                        // Restaurer les tâches avec leur état
+                        this.tasks = data.tasks.map(task => {
+                            if (task.isRunning && task.lastSavedTime) {
+                                const now = Date.now();
+                                const elapsed = Math.floor((now - task.lastSavedTime) / 1000);
+                                return {
+                                    ...task,
+                                    elapsedTime: task.lastSavedElapsedTime + (elapsed > 0 ? elapsed : 0),
+                                    startTime: now
+                                };
+                            }
+                            return task;
+                        });
 
-                    const lastCloseTime = localStorage.getItem('lastCloseTime');
-                    if (lastCloseTime) {
-                        const closeTime = new Date(lastCloseTime);
-                        const now = new Date();
-                        
+                        this.settings = data.settings;
+                        this.dasList = this.settings.dasInput.split('\n').filter(das => das.trim());
+
+                        // Restaurer les tâches en cours
                         this.tasks.forEach(task => {
                             if (task.isRunning) {
-                                const elapsedSeconds = Math.floor((now - closeTime) / 1000);
-                                if (elapsedSeconds > 0) {
-                                    task.elapsedTime += elapsedSeconds;
-                                    task.startTime = Date.now();
-                                    
-                                    // Notification si plus d'une minute s'est écoulée
-                                    const minutes = Math.floor(elapsedSeconds / 60);
-                                    if (minutes > 0 && Notification.permission === 'granted') {
-                                        new Notification('Temps ajouté', {
-                                            body: `${minutes} minute(s) ajoutée(s) à la tâche "${task.name}"`,
-                                            icon: './favicon.ico',
-                                            tag: 'time-added-' + task.id,
-                                            requireInteraction: true
-                                        });
-                                    }
-                                }
+                                this.$nextTick(() => {
+                                    this.startTimer(task);
+                                });
                             }
                         });
-                        
-                        localStorage.removeItem('lastCloseTime');
                     }
-                } catch (error) {
-                    console.error('Erreur lors du chargement des tâches:', error);
                 }
+            } catch (error) {
+                console.error('Erreur lors du chargement des données:', error);
             }
         },
         deleteTask() {
@@ -927,6 +931,11 @@ const app = createApp({
             const runningTasks = this.tasks.filter(t => t.isRunning);
             if (runningTasks.length > 0) {
                 localStorage.setItem('lastCloseTime', new Date().toISOString());
+                // Sauvegarder l'état exact avant la fermeture
+                runningTasks.forEach(task => {
+                    task.lastSavedTime = Date.now();
+                    task.lastSavedElapsedTime = task.elapsedTime;
+                });
                 this.saveTasks();
             }
             
@@ -940,32 +949,30 @@ const app = createApp({
             if (lastCloseTime) {
                 const closeTime = new Date(lastCloseTime);
                 const now = new Date();
-                const runningTasks = this.tasks.filter(t => t.isRunning);
                 
-                runningTasks.forEach(task => {
-                    const elapsedSeconds = Math.floor((now - closeTime) / 1000);
-                    if (elapsedSeconds > 0) {
-                        task.elapsedTime += elapsedSeconds;
-                        task.startTime = Date.now();
-                        
-                        // Redémarrer le timer
-                        this.startTimer(task);
-                        
-                        // Envoyer une notification si plus d'une minute s'est écoulée
-                        const minutes = Math.floor(elapsedSeconds / 60);
-                        if (minutes > 0) {
-                            this.showNotification('Temps ajouté', 
-                                `${minutes} minute(s) ajoutée(s) à la tâche "${task.name}"`,
-                                { tag: 'time-added-' + task.id }
-                            );
+                this.tasks.forEach(task => {
+                    if (task.isRunning && task.lastSavedTime) {
+                        const elapsedSeconds = Math.floor((now - new Date(task.lastSavedTime)) / 1000);
+                        if (elapsedSeconds > 0) {
+                            task.elapsedTime = task.lastSavedElapsedTime + elapsedSeconds;
+                            task.startTime = Date.now();
+                            
+                            // Redémarrer le timer
+                            this.startTimer(task);
+                            
+                            // Envoyer une notification si plus d'une minute s'est écoulée
+                            const minutes = Math.floor(elapsedSeconds / 60);
+                            if (minutes > 0) {
+                                this.showNotification('Temps ajouté', 
+                                    `${minutes} minute(s) ajoutée(s) à la tâche "${task.name}"`,
+                                    { tag: 'time-added-' + task.id }
+                                );
+                            }
                         }
                     }
                 });
 
-                if (runningTasks.length > 0) {
-                    this.saveTasks();
-                }
-
+                this.saveTasks();
                 localStorage.removeItem('lastCloseTime');
             }
         },
@@ -1044,31 +1051,6 @@ const app = createApp({
                 console.log('✅ Données sauvegardées:', new Date().toLocaleString());
             } catch (error) {
                 console.error('❌ Erreur lors de la sauvegarde:', error);
-            }
-        },
-        loadData() {
-            try {
-                const savedData = localStorage.getItem('timeTrackerData');
-                if (savedData) {
-                    const data = JSON.parse(savedData);
-                    if (data.version && data.tasks && data.settings) {
-                        this.tasks = data.tasks;
-                        this.settings = data.settings;
-                        this.dasList = this.settings.dasInput.split('\n').filter(das => das.trim());
-
-                        // Restaurer les tâches en cours
-                        this.tasks.forEach(task => {
-                            if (task.isRunning) {
-                                task.startTime = Date.now();
-                                this.$nextTick(() => {
-                                    this.startTimer(task);
-                                });
-                            }
-                        });
-                    }
-                }
-            } catch (error) {
-                console.error('Erreur lors du chargement des données:', error);
             }
         },
         startAutoSave() {
