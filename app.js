@@ -366,13 +366,16 @@ const app = createApp({
                 if (elapsed > 0) {
                     task.elapsedTime += elapsed;
                     this.lastUpdateTime = now;
+                    
+                    // Sauvegarder immédiatement l'état
                     this.saveTasks();
                     
                     // Sauvegarder l'état actuel dans le localStorage
                     localStorage.setItem('currentRunningTask', JSON.stringify({
                         taskId: task.id,
                         startTime: task.startTime,
-                        lastUpdateTime: this.lastUpdateTime
+                        lastUpdateTime: this.lastUpdateTime,
+                        elapsedTime: task.elapsedTime
                     }));
                 }
             }, 1000);
@@ -391,7 +394,20 @@ const app = createApp({
             this.dasList = this.settings.dasInput.split('\n').filter(das => das.trim());
         },
         async saveTasks() {
-            localStorage.setItem('timeTrackerTasks', JSON.stringify(this.tasks));
+            try {
+                // Sauvegarder dans timeTrackerTasks
+                localStorage.setItem('timeTrackerTasks', JSON.stringify(this.tasks));
+                
+                // Sauvegarder aussi dans timeTrackerData pour assurer la cohérence
+                const data = {
+                    tasks: this.tasks,
+                    settings: this.settings,
+                    version: '1.0'
+                };
+                localStorage.setItem('timeTrackerData', JSON.stringify(data));
+            } catch (error) {
+                console.error('Erreur lors de la sauvegarde des tâches:', error);
+            }
         },
         loadTasks() {
             const savedTasks = localStorage.getItem('timeTrackerTasks');
@@ -1039,6 +1055,16 @@ const app = createApp({
                         this.tasks = data.tasks;
                         this.settings = data.settings;
                         this.dasList = this.settings.dasInput.split('\n').filter(das => das.trim());
+
+                        // Restaurer les tâches en cours
+                        this.tasks.forEach(task => {
+                            if (task.isRunning) {
+                                task.startTime = Date.now();
+                                this.$nextTick(() => {
+                                    this.startTimer(task);
+                                });
+                            }
+                        });
                     }
                 }
             } catch (error) {
@@ -1219,10 +1245,9 @@ const app = createApp({
         // Vérifier si la permission est déjà accordée
         this.notificationPermissionGranted = Notification.permission === 'granted';
 
-        // Charger les données dans le bon ordre
+        // Charger uniquement les données une fois
         this.loadSettings();
-        this.loadData();
-        this.loadTasks();
+        this.loadData(); // Cette méthode charge maintenant tout
 
         // Vérifier s'il y avait une tâche en cours
         const currentRunningTask = localStorage.getItem('currentRunningTask');
@@ -1231,8 +1256,13 @@ const app = createApp({
                 const { taskId, startTime, lastUpdateTime } = JSON.parse(currentRunningTask);
                 const task = this.tasks.find(t => t.id === taskId);
                 if (task && task.isRunning) {
-                    task.startTime = startTime;
-                    this.lastUpdateTime = lastUpdateTime;
+                    const now = Date.now();
+                    const elapsed = Math.floor((now - lastUpdateTime) / 1000);
+                    if (elapsed > 0) {
+                        task.elapsedTime += elapsed;
+                    }
+                    task.startTime = now;
+                    this.lastUpdateTime = now;
                     this.$nextTick(() => {
                         this.startTimer(task);
                     });
